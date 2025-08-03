@@ -1,5 +1,5 @@
 # models.py - CORRECTED VERSION
-from sqlalchemy import Column, ForeignKey, Integer, String
+from sqlalchemy import Column, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
 from .database import Base
 
@@ -26,3 +26,15 @@ class Preference(Base):  # Changed from UserPreferences to match main.py
     health_conditions = Column(String(100))  # comma-separated: diabetes,etc
 
     user = relationship("User", back_populates="preference")  # Changed from preferences
+
+class WeeklyMenu(Base):
+    __tablename__ = 'weekly_menus'
+    
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    menu_data = Column(Text)  # JSON string of the menu
+    generation_prompt = Column(Text)  # JSON string of preferences used
+    created_at = Column(String(50))  # ISO format datetime
+    is_active = Column(Integer, default=1)  # Using Integer instead of Boolean for MySQL compatibility
+    
+    user = relationship("User")

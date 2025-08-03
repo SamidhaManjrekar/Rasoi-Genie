@@ -1,7 +1,10 @@
 # main.py - CORRECTED VERSION
+import json
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+
+from . import agents
 from . import models, schema, utils, database, auth
 
 models.Base.metadata.create_all(bind=database.engine)
@@ -94,3 +97,97 @@ def get_protected_data(user: models.User = Depends(auth.get_current_user)):
         "user": user.username,
         "user_id": user.id
     }
+
+@app.post("/generate-menu", response_model=schema.MenuResponse)
+def generate_menu(req: schema.MenuGenerateRequest, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    pref = db.query(models.Preference).filter(models.Preference.user_id == current_user.id).first()
+    if not pref:
+        raise HTTPException(status_code=400, detail="Set preferences before generating menu")
+
+    preferences = {
+        "diet_type": pref.diet_type,
+        "cuisine": pref.cuisine.split(","),
+        "meals": pref.meals.split(","),
+        "cooking_time": pref.cooking_time,
+        "health_conditions": pref.health_conditions.split(",")
+    }
+
+    agent = agents.IndianMenuAgent(openai_api_key="your-openai-api-key")
+    menu_result = agent.generate_weekly_menu(preferences)
+
+    new_menu = models.WeeklyMenu(
+        user_id=current_user.id,
+        menu_data=json.dumps(menu_result["menu"]),
+        generation_prompt=json.dumps(menu_result["preferences_used"]),
+        created_at=menu_result["generated_at"]
+    )
+    db.query(models.WeeklyMenu).filter(models.WeeklyMenu.user_id == current_user.id, models.WeeklyMenu.is_active == 1).update({"is_active": 0})
+    db.add(new_menu)
+    db.commit()
+    db.refresh(new_menu)
+
+    return {
+        "menu": menu_result["menu"],
+        "preferences_used": menu_result["preferences_used"],
+        "generated_at": menu_result["generated_at"],
+        "menu_id": new_menu.id
+    }
+
+@app.get("/current-menu", response_model=schema.MenuResponse)
+def get_current_menu(current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    menu = db.query(models.WeeklyMenu).filter(models.WeeklyMenu.user_id == current_user.id, models.WeeklyMenu.is_active == 1).first()
+    if not menu:
+        raise HTTPException(status_code=404, detail="No active menu found")
+    return {
+        "menu": json.loads(menu.menu_data),
+        "preferences_used": json.loads(menu.generation_prompt),
+        "generated_at": menu.created_at,
+        "menu_id": menu.id
+    }
+
+@app.post("/regenerate-meal", response_model=schema.MenuResponse)
+def regenerate_meal(req: schema.MenuRegenerateRequest, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    menu = db.query(models.WeeklyMenu).filter(models.WeeklyMenu.id == req.menu_id, models.WeeklyMenu.user_id == current_user.id).first()
+    if not menu:
+        raise HTTPException(status_code=404, detail="Menu not found")
+
+    preferences = json.loads(menu.generation_prompt)
+    agent = agents.IndianMenuAgent(openai_api_key="your-openai-api-key")
+    new_dishes = agent.tools_handler.get_dishes_by_criteria(
+        preferences['cuisine'][0],
+        req.meal,
+        preferences['diet_type'],
+        count=10
+    )
+
+    current_menu = json.loads(menu.menu_data)
+    used_dishes = [m for d in current_menu.values() for m in d.values()]
+    new_dish = next((dish for dish in new_dishes if dish not in used_dishes), f"Simple {req.meal}")
+
+    current_menu[req.day][req.meal] = new_dish
+    menu.menu_data = json.dumps(current_menu)
+    db.commit()
+
+    return {
+        "menu": current_menu,
+        "preferences_used": preferences,
+        "generated_at": menu.created_at,
+        "menu_id": menu.id
+    }
+
+@app.get("/menu-history", response_model=schema.MenuHistoryResponse)
+def get_menu_history(limit: int = 10, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
+    history = db.query(models.WeeklyMenu).filter(models.WeeklyMenu.user_id == current_user.id).order_by(models.WeeklyMenu.id.desc()).limit(limit).all()
+    result = []
+
+    for item in history:
+        full_menu = json.loads(item.menu_data)
+        preview = {day: list(meals.values()) for day, meals in full_menu.items()}
+        result.append(schema.MenuHistoryItem(
+            id=item.id,
+            generated_at=item.created_at,
+            is_active=bool(item.is_active),
+            menu_preview=preview
+        ))
+
+    return {"menus": result}
