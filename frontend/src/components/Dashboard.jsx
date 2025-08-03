@@ -1,29 +1,43 @@
 import { useState, useEffect } from 'react';
-import { ChefHat, Calendar, Utensils, ShoppingCart, Star, CheckCircle, Loader2 } from 'lucide-react';
+import {
+  ChefHat,
+  Calendar,
+  Utensils,
+  ShoppingCart,
+  Star,
+  CheckCircle,
+  Loader2,
+  Settings,
+} from 'lucide-react';
 import { apiService } from '../services/api';
 import { authUtils } from '../utils/auth';
 
 function DashboardPage({ onNavigate, user, onLogout }) {
   const [loading, setLoading] = useState(true);
   const [protectedData, setProtectedData] = useState(null);
+  const [hasPreferences, setHasPreferences] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
       try {
         const token = authUtils.getToken();
         if (token) {
-          // Try to fetch protected data if endpoint exists
           try {
             const data = await apiService.getProtectedData(token);
             setProtectedData(data);
           } catch (err) {
-            // If protected endpoint doesn't exist, just continue
             console.log('Protected endpoint not available yet');
+          }
+
+          try {
+            const preferences = await apiService.getPreferences(token);
+            setHasPreferences(!!preferences);
+          } catch (err) {
+            setHasPreferences(false);
           }
         }
       } catch (err) {
-        console.error('Failed to fetch protected data:', err);
-        // Token might be expired, redirect to login
+        console.error('Failed to fetch data:', err);
         handleLogout();
       } finally {
         setLoading(false);
@@ -37,6 +51,14 @@ function DashboardPage({ onNavigate, user, onLogout }) {
     authUtils.clearAuth();
     onLogout();
     onNavigate('landing');
+  };
+
+  const handleSetupPreferences = () => {
+    onNavigate('preferences');
+  };
+
+  const handleUpdatePreferences = () => {
+    onNavigate('preferences', { isUpdate: true });
   };
 
   if (loading) {
@@ -78,7 +100,7 @@ function DashboardPage({ onNavigate, user, onLogout }) {
         <div className="max-w-6xl mx-auto">
           <h1 className="text-4xl font-bold text-gray-800 mb-2">Welcome back, {user}!</h1>
           <p className="text-xl text-gray-600 mb-8">Ready to plan some delicious meals?</p>
-          
+
           {/* Status Card */}
           <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-8">
             <div className="flex items-center space-x-2">
@@ -88,7 +110,7 @@ function DashboardPage({ onNavigate, user, onLogout }) {
               </span>
             </div>
           </div>
-          
+
           {/* Quick Actions */}
           <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12">
             <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-shadow cursor-pointer">
@@ -103,57 +125,64 @@ function DashboardPage({ onNavigate, user, onLogout }) {
             <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-shadow cursor-pointer">
               <Utensils className="h-12 w-12 text-green-600 mb-4" />
               <h3 className="text-xl font-semibold text-gray-800 mb-2">My Preferences</h3>
-              <p className="text-gray-600 mb-4">Update your dietary preferences</p>
-             <button className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors">
-               Update
-             </button>
-           </div>
+              <p className="text-gray-600 mb-4">
+                {hasPreferences
+                  ? 'Update your dietary preferences'
+                  : 'Set up your dietary preferences'}
+              </p>
+              <button
+                className="bg-green-600 text-white px-4 py-2 rounded-lg hover:bg-green-700 transition-colors"
+                onClick={hasPreferences ? handleUpdatePreferences : handleSetupPreferences}
+              >
+                {hasPreferences ? 'Update' : 'Set Up'}
+              </button>
+            </div>
 
-           <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-shadow cursor-pointer">
-             <ShoppingCart className="h-12 w-12 text-blue-600 mb-4" />
-             <h3 className="text-xl font-semibold text-gray-800 mb-2">Grocery List</h3>
-             <p className="text-gray-600 mb-4">View and download shopping list</p>
-             <button className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
-               View List
-             </button>
-           </div>
+            <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-shadow cursor-pointer">
+              <ShoppingCart className="h-12 w-12 text-blue-600 mb-4" />
+              <h3 className="text-xl font-semibold text-gray-800 mb-2">Grocery List</h3>
+              <p className="text-gray-600 mb-4">View and download shopping list</p>
+              <button className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors">
+                View List
+              </button>
+            </div>
 
-           <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-shadow cursor-pointer">
-             <Star className="h-12 w-12 text-yellow-600 mb-4" />
-             <h3 className="text-xl font-semibold text-gray-800 mb-2">Favorites</h3>
-             <p className="text-gray-600 mb-4">Your saved recipes and meals</p>
-             <button className="bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 transition-colors">
-               View All
-             </button>
-           </div>
-         </div>
+            <div className="bg-white rounded-xl shadow-sm p-6 hover:shadow-md transition-shadow cursor-pointer">
+              <Star className="h-12 w-12 text-yellow-600 mb-4" />
+              <h3 className="text-xl font-semibold text-gray-800 mb-2">Favorites</h3>
+              <p className="text-gray-600 mb-4">Your saved recipes and meals</p>
+              <button className="bg-yellow-600 text-white px-4 py-2 rounded-lg hover:bg-yellow-700 transition-colors">
+                View All
+              </button>
+            </div>
+          </div>
 
-         {/* Coming Soon Features */}
-         <div className="bg-gradient-to-r from-orange-50 to-red-50 rounded-xl p-8">
-           <h2 className="text-2xl font-bold text-gray-800 mb-6">Coming Soon Features</h2>
-           <div className="grid md:grid-cols-2 gap-4">
-             <div className="flex items-center space-x-3">
-               <CheckCircle className="h-6 w-6 text-green-600" />
-               <span className="text-gray-700">AI-powered menu generation</span>
-             </div>
-             <div className="flex items-center space-x-3">
-               <CheckCircle className="h-6 w-6 text-green-600" />
-               <span className="text-gray-700">Recipe video recommendations</span>
-             </div>
-             <div className="flex items-center space-x-3">
-               <CheckCircle className="h-6 w-6 text-green-600" />
-               <span className="text-gray-700">Nutritional analysis</span>
-             </div>
-             <div className="flex items-center space-x-3">
-               <CheckCircle className="h-6 w-6 text-green-600" />
-               <span className="text-gray-700">Smart grocery optimization</span>
-             </div>
-           </div>
-         </div>
-       </div>
-     </main>
-   </div>
- );
+          {/* Coming Soon Features */}
+          <div className="bg-gradient-to-r from-orange-50 to-red-50 rounded-xl p-8">
+            <h2 className="text-2xl font-bold text-gray-800 mb-6">Coming Soon Features</h2>
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="flex items-center space-x-3">
+                <CheckCircle className="h-6 w-6 text-green-600" />
+                <span className="text-gray-700">AI-powered menu generation</span>
+              </div>
+              <div className="flex items-center space-x-3">
+                <CheckCircle className="h-6 w-6 text-green-600" />
+                <span className="text-gray-700">Recipe video recommendations</span>
+              </div>
+              <div className="flex items-center space-x-3">
+                <CheckCircle className="h-6 w-6 text-green-600" />
+                <span className="text-gray-700">Nutritional analysis</span>
+              </div>
+              <div className="flex items-center space-x-3">
+                <CheckCircle className="h-6 w-6 text-green-600" />
+                <span className="text-gray-700">Smart grocery optimization</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
 }
 
 export default DashboardPage;
