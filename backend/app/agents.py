@@ -1,14 +1,20 @@
-# agents.py - Place this file in your FastAPI project directory (same level as main.py)
+# agents.py
 
 from langchain.agents import AgentType, create_react_agent, AgentExecutor
 from langchain.tools import Tool
 from langchain.prompts import PromptTemplate
-from langchain_openai import ChatOpenAI
+from langchain_together import ChatTogether
 from langchain.memory import ConversationBufferMemory
+from langchain_community.tools import DuckDuckGoSearchRun
+from langchain.chains.summarize import load_summarize_chain
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.document_loaders import WebBaseLoader
+
 from typing import Dict, List, Any
 import json
 import random
 from datetime import datetime, timedelta
+import os
 
 class IndianMenuDatabase:
     """Simulated database of Indian dishes - replace with actual DB queries later"""
@@ -80,18 +86,22 @@ class IndianMenuDatabase:
         "marathi": {
             "breakfast": {
                 "veg": ["Poha", "Upma", "Misal Pav", "Sabudana Khichdi", "Thalipeeth"],
+                "non_veg": ["Chicken Vada Pav", "Egg Curry"], # Added some non-veg options for demonstration
                 "vegan": ["Poha", "Upma", "Sabudana Khichdi"]
             },
             "lunch": {
                 "veg": ["Dal Rice", "Bharleli Vangi", "Alu Vadi", "Zunka Bhakar"],
+                "non_veg": ["Mutton Curry", "Chicken Thali"], # Added non-veg options
                 "vegan": ["Dal Rice", "Vegetable Curry + Rice"]
             },
             "dinner": {
                 "veg": ["Puran Poli", "Bhakri + Pitla", "Vegetable Curry + Rice"],
+                "non_veg": ["Chicken Biryani", "Fish Fry"], # Added non-veg options
                 "vegan": ["Simple Dal + Rice", "Vegetable Curry + Bhakri"]
             },
             "snacks": {
                 "veg": ["Vada Pav", "Bhel Puri", "Kothimbir Vadi"],
+                "non_veg": ["Chicken Kothimbir Vadi"], # Added non-veg options
                 "vegan": ["Bhel Puri", "Roasted Chana"]
             }
         },
@@ -157,37 +167,43 @@ class MenuGenerationTools:
     def get_dishes_by_criteria(self, cuisine: str, meal_type: str, diet_type: str, count: int = 5) -> List[str]:
         """Get dishes based on cuisine, meal type, and diet preference"""
         try:
-            dishes = self.db.DISHES.get(cuisine, {}).get(meal_type, {}).get(diet_type, [])
-            return random.sample(dishes, min(count, len(dishes))) if dishes else []
+            cuisines = [c.strip() for c in cuisine.split(',') if c.strip()]
+            all_dishes = []
+            for c in cuisines:
+                dishes = self.db.DISHES.get(c, {}).get(meal_type, {}).get(diet_type, [])
+                all_dishes.extend(dishes)
+            
+            dishes_result = random.sample(list(set(all_dishes)), min(count, len(list(set(all_dishes))))) if all_dishes else []
+            
+            # This is the key change: return a more informative string
+            if not dishes_result:
+                return f"No dishes found in internal database for cuisine(s) {cuisines}, meal {meal_type}, diet {diet_type}."
+            return dishes_result
         except Exception as e:
-            return []
+            return f"An error occurred while fetching dishes: {e}"
     
     def check_nutritional_balance(self, dishes: List[str], health_conditions: List[str]) -> Dict[str, Any]:
         """Check if the meal plan is nutritionally balanced"""
         balance_score = 0
         recommendations = []
         
-        # Check for protein sources
         protein_dishes = [dish for dish in dishes if any(protein in dish for protein in self.db.NUTRITIONAL_BALANCE["high_protein"])]
         if len(protein_dishes) >= 2:
             balance_score += 25
         else:
             recommendations.append("Add more protein sources like Dal, Paneer, or Chicken")
         
-        # Check for fiber sources
         fiber_dishes = [dish for dish in dishes if any(fiber in dish for fiber in self.db.NUTRITIONAL_BALANCE["high_fiber"])]
         if len(fiber_dishes) >= 3:
             balance_score += 25
         else:
             recommendations.append("Include more vegetables like Bhindi, Palak, or Mixed Vegetables")
         
-        # Check for variety
-        if len(set(dishes)) == len(dishes):  # All unique dishes
+        if len(set(dishes)) == len(dishes):
             balance_score += 25
         else:
             recommendations.append("Ensure variety - avoid repeating similar dishes")
         
-        # Health condition considerations
         if "diabetes" in health_conditions:
             diabetic_friendly = [dish for dish in dishes if any(friendly in dish for friendly in self.db.NUTRITIONAL_BALANCE["diabetic_friendly"])]
             if len(diabetic_friendly) >= len(dishes) * 0.6:
@@ -213,7 +229,6 @@ class MenuGenerationTools:
             "others": []
         }
         
-        # Simple ingredient mapping (expand this based on your needs)
         ingredient_mapping = {
             "Dal": ("grains_pulses", ["Toor Dal", "Moong Dal", "Masoor Dal"]),
             "Paneer": ("dairy_proteins", ["Paneer", "Milk"]),
@@ -239,7 +254,6 @@ class MenuGenerationTools:
                 if ingredient in dish:
                     grocery_categories[category].extend(items)
         
-        # Remove duplicates
         for category in grocery_categories:
             grocery_categories[category] = list(set(grocery_categories[category]))
         
@@ -248,30 +262,55 @@ class MenuGenerationTools:
 class IndianMenuAgent:
     """Main agent class for generating Indian meal plans"""
     
-    def __init__(self, openai_api_key: str):
-        self.openai_api_key = openai_api_key
+    def __init__(self, together_api_key: str):
+        self.together_api_key = together_api_key
         try:
-            self.llm = ChatOpenAI(
+            os.environ["TOGETHER_API_KEY"] = together_api_key
+            self.llm = ChatTogether(
                 temperature=0.7,
-                model="gpt-3.5-turbo",
-                openai_api_key=openai_api_key
+                model="meta-llama/Llama-3-8b-chat-hf"
             )
         except Exception as e:
-            print(f"Warning: Could not initialize OpenAI client: {e}")
+            print(f"Warning: Could not initialize Together AI client: {e}")
             self.llm = None
             
         self.tools_handler = MenuGenerationTools()
         self.memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True) if self.llm else None
         self.tools = self._create_tools() if self.llm else []
         self.agent_executor = self._create_agent() if self.llm else None
-    
+
+    def _parse_get_dishes_input(self, input_str: str) -> str:
+        """Parse input for get_dishes_by_criteria to ensure count is an integer"""
+        parts = input_str.split(",")
+        cuisine = parts[0]
+        meal_type = parts[1]
+        diet_type = parts[2]
+        count = 5
+        if len(parts) > 3 and parts[3].isdigit():
+            count = int(parts[3])
+        return f"{cuisine},{meal_type},{diet_type},{count}"
+
     def _create_tools(self) -> List[Tool]:
-        """Create tools for the agent"""
+        """Create tools for the agent, including new web search tools."""
+        
+        search = DuckDuckGoSearchRun()
+        
+        def get_summary(url: str) -> str:
+            try:
+                loader = WebBaseLoader(url)
+                docs = loader.load()
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=0)
+                split_docs = text_splitter.split_documents(docs)
+                summarize_chain = load_summarize_chain(self.llm, chain_type="stuff")
+                return summarize_chain.run(split_docs)
+            except Exception as e:
+                return f"Error summarizing URL {url}: {e}"
+        
         return [
             Tool(
                 name="get_dishes_by_criteria",
-                description="Get dishes based on cuisine, meal type, and diet preference. Input: 'cuisine,meal_type,diet_type,count'",
-                func=lambda x: str(self.tools_handler.get_dishes_by_criteria(*x.split(",")[:3], int(x.split(",")[3]) if len(x.split(",")) > 3 else 5))
+                description="Get dishes from the internal database based on cuisine, meal type, and diet preference. Input: 'cuisine,meal_type,diet_type,count'. 'count' must be a number. This tool will return a list of dishes or a message if none are found. The agent should use 'search_for_new_dishes' if the result indicates no dishes were found.",
+                func=lambda x: str(self.tools_handler.get_dishes_by_criteria(*self._parse_get_dishes_input(x).split(',')))
             ),
             Tool(
                 name="check_nutritional_balance",
@@ -280,8 +319,18 @@ class IndianMenuAgent:
             ),
             Tool(
                 name="generate_grocery_list",
-                description="Generate grocery list from weekly menu. Input: JSON string of weekly menu",
+                description="Generate grocery list from weekly menu. Input: JSON string of weekly menu. This tool should only be called after a full menu has been successfully generated.",
                 func=lambda x: str(self.tools_handler.generate_grocery_list(json.loads(x)))
+            ),
+            Tool(
+                name="search_for_new_dishes",
+                description="Searches the web for latest Indian dish ideas, recipes, or trends. Use this tool if the internal database does not return results or if the user requests modern/new dishes. Input should be a specific search query like 'latest Punjabi breakfast dishes' or 'new vegan dinner recipes'.",
+                func=search.run
+            ),
+            Tool(
+                name="summarize_web_content",
+                description="Summarizes the content of a given URL to extract dish names and ingredients. Input should be a single URL.",
+                func=get_summary
             )
         ]
     
@@ -296,32 +345,33 @@ class IndianMenuAgent:
         """Create the main agent executor"""
         
         prompt_template = """
-        You are an expert Indian cuisine meal planner. Your goal is to create balanced, diverse, and delicious weekly meal plans.
-        
-        You have access to the following tools:
-        {tools}
-        
-        Use the following format:
-        Question: the input question you must answer
-        Thought: you should always think about what to do
-        Action: the action to take, should be one of [{tool_names}]
-        Action Input: the input to the action
-        Observation: the result of the action
-        ... (this Thought/Action/Action Input/Observation can repeat N times)
-        Thought: I now know the final answer
-        Final Answer: the final answer to the original input
-        
-        Remember:
-        1. Ensure variety - don't repeat the same dish multiple times in a week
-        2. Balance nutrition - include proteins, vegetables, and grains
-        3. Consider health conditions when selecting dishes
-        4. Respect dietary preferences (veg/non-veg/vegan)
-        5. Include dishes from preferred cuisines
-        6. Suggest balanced meals for each day
-        
-        Question: {input}
-        Thought: {agent_scratchpad}
-        """
+You are an expert Indian cuisine meal planner. Your goal is to create balanced, diverse, and delicious weekly meal plans.
+You MUST use the tools provided. Do not invent your own tools.
+
+You have access to the following tools:
+{tools}
+
+Use the following format:
+Question: the input question you must answer
+Thought: you should always think about what to do
+Action: the action to take, should be one of [{tool_names}]
+Action Input: the input to the action
+Observation: the result of the action
+... (this Thought/Action/Action Input/Observation can repeat N times)
+Thought: I now know the final answer
+Final Answer: the final answer to the original input
+
+Remember:
+1. First, try to use the 'get_dishes_by_criteria' tool.
+2. If that tool's result is insufficient (e.g., it returns an empty list), you MUST use the 'tavily_search' tool to find more dishes.
+3. When using 'tavily_search', use a concise and effective query, like "popular Rajasthani vegetarian dinner dishes".
+4. After receiving the 'Observation' from 'tavily_search', carefully read the content to extract dish names and then use those names to construct the final menu.
+5. Do NOT try to summarize web content or use any other tools that are not in your list.
+6. Once you have a complete 7-day menu, provide the final answer as a single, valid JSON object.
+
+Question: {input}
+Thought: {agent_scratchpad}
+"""
         
         prompt = PromptTemplate.from_template(prompt_template)
         
@@ -336,7 +386,7 @@ class IndianMenuAgent:
             tools=self.tools,
             memory=self.memory,
             verbose=True,
-            max_iterations=10,
+            max_iterations=15,
             handle_parsing_errors=True
         )
     
@@ -344,10 +394,8 @@ class IndianMenuAgent:
         """Generate a weekly menu based on user preferences"""
         
         if not self.agent_executor:
-            # Use fallback if agent is not available
             return self._fallback_menu_generation(preferences)
         
-        # Prepare the prompt for the agent
         prompt = f"""
         Create a 7-day meal plan with the following preferences:
         - Diet Type: {preferences.get('diet_type')}
@@ -356,16 +404,14 @@ class IndianMenuAgent:
         - Cooking Time: {preferences.get('cooking_time')}
         - Health Conditions: {', '.join(preferences.get('health_conditions', []))}
         
-        For each day (Monday to Sunday), suggest:
-        {', '.join(preferences.get('meals', []))}
-        
+        For each day (Monday to Sunday), suggest one dish for each meal. Make sure to find some new and modern dishes by searching online, especially if the internal database doesn't have enough variety. The cooking time should be considered as a constraint for the chosen dishes, but do not pass it to any tool as a numerical argument.
+
         Ensure:
-        1. No dish repeats in the entire week
-        2. Nutritionally balanced meals
-        3. Variety in cooking methods and ingredients
-        4. Consideration for health conditions
-        5. Appropriate for the specified diet type
-        
+        1. No dish repeats in the entire week.
+        2. The entire week is nutritionally balanced.
+        3. The plan is appropriate for the specified diet and health conditions.
+        4. You use your tools, including web search, to find a diverse set of dishes.
+
         Return the response in this JSON format:
         {{
             "Monday": {{"breakfast": "dish_name", "lunch": "dish_name", "dinner": "dish_name"}},
@@ -373,7 +419,7 @@ class IndianMenuAgent:
             ... for all 7 days
         }}
         
-        Also provide nutritional balance analysis and any recommendations.
+        Also provide a brief nutritional analysis and any recommendations.
         """
         
         try:
@@ -386,7 +432,6 @@ class IndianMenuAgent:
     def _parse_agent_response(self, response: str, preferences: Dict) -> Dict[str, Any]:
         """Parse agent response and structure it properly"""
         try:
-            # Try to extract JSON from the response
             start_idx = response.find('{')
             end_idx = response.rfind('}') + 1
             
@@ -423,17 +468,17 @@ class IndianMenuAgent:
                 dish_found = False
                 for cuisine in cuisines:
                     dishes = self.tools_handler.get_dishes_by_criteria(cuisine, meal, diet_type, 20)
-                    available_dishes = [dish for dish in dishes if dish not in used_dishes]
-                    
-                    if available_dishes:
-                        selected_dish = random.choice(available_dishes)
-                        fallback_menu[day][meal] = selected_dish
-                        used_dishes.add(selected_dish)
-                        dish_found = True
-                        break
+                    # Check if the result is a list and not the "no dishes" string
+                    if isinstance(dishes, list) and dishes:
+                        available_dishes = [dish for dish in dishes if dish not in used_dishes]
+                        if available_dishes:
+                            selected_dish = random.choice(available_dishes)
+                            fallback_menu[day][meal] = selected_dish
+                            used_dishes.add(selected_dish)
+                            dish_found = True
+                            break
                 
                 if not dish_found:
-                    # If no dish found, use a generic option
                     fallback_menu[day][meal] = f"Simple {meal.title()} ({diet_type})"
         
         return {

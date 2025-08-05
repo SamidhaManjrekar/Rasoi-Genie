@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 from . import agents
 from . import models, schema, utils, database, auth
 
+import os
+
 models.Base.metadata.create_all(bind=database.engine)
 app = FastAPI()
 
@@ -98,6 +100,11 @@ def get_protected_data(user: models.User = Depends(auth.get_current_user)):
         "user_id": user.id
     }
 
+# In a real-world scenario, get this key from a secure environment variable
+TOGETHER_API_KEY = "tgp_v1_3L1Gq3VKiuALrOxkGgBUe9sRPnZWVSx8gcL18coxquI"
+# Also, set it as an environment variable for LangChain's convenience
+os.environ["TOGETHER_API_KEY"] = TOGETHER_API_KEY
+
 @app.post("/generate-menu", response_model=schema.MenuResponse)
 def generate_menu(req: schema.MenuGenerateRequest, current_user: models.User = Depends(auth.get_current_user), db: Session = Depends(get_db)):
     pref = db.query(models.Preference).filter(models.Preference.user_id == current_user.id).first()
@@ -112,16 +119,19 @@ def generate_menu(req: schema.MenuGenerateRequest, current_user: models.User = D
         "health_conditions": pref.health_conditions.split(",")
     }
 
-    agent = agents.IndianMenuAgent(openai_api_key="your-openai-api-key")
+    agent = agents.IndianMenuAgent(together_api_key=TOGETHER_API_KEY)
     menu_result = agent.generate_weekly_menu(preferences)
+
+    # Deactivate previous menu
+    db.query(models.WeeklyMenu).filter(models.WeeklyMenu.user_id == current_user.id, models.WeeklyMenu.is_active == 1).update({"is_active": 0})
 
     new_menu = models.WeeklyMenu(
         user_id=current_user.id,
         menu_data=json.dumps(menu_result["menu"]),
         generation_prompt=json.dumps(menu_result["preferences_used"]),
-        created_at=menu_result["generated_at"]
+        created_at=menu_result["generated_at"],
+        is_active=1
     )
-    db.query(models.WeeklyMenu).filter(models.WeeklyMenu.user_id == current_user.id, models.WeeklyMenu.is_active == 1).update({"is_active": 0})
     db.add(new_menu)
     db.commit()
     db.refresh(new_menu)
@@ -152,18 +162,15 @@ def regenerate_meal(req: schema.MenuRegenerateRequest, current_user: models.User
         raise HTTPException(status_code=404, detail="Menu not found")
 
     preferences = json.loads(menu.generation_prompt)
-    agent = agents.IndianMenuAgent(openai_api_key="your-openai-api-key")
-    new_dishes = agent.tools_handler.get_dishes_by_criteria(
-        preferences['cuisine'][0],
-        req.meal,
-        preferences['diet_type'],
-        count=10
-    )
+    agent = agents.IndianMenuAgent(together_api_key=TOGETHER_API_KEY)
+    
+    # Use the agent to find a new dish, which might involve a search
+    prompt = f"Suggest one new dish for {req.day}'s {req.meal} with cuisine '{preferences['cuisine'][0]}' and diet type '{preferences['diet_type']}'. The current dishes are: {json.loads(menu.menu_data)[req.day].values()}. Do not repeat any of them."
+    
+    response = agent.agent_executor.invoke({"input": prompt})
+    new_dish = response['output']
 
     current_menu = json.loads(menu.menu_data)
-    used_dishes = [m for d in current_menu.values() for m in d.values()]
-    new_dish = next((dish for dish in new_dishes if dish not in used_dishes), f"Simple {req.meal}")
-
     current_menu[req.day][req.meal] = new_dish
     menu.menu_data = json.dumps(current_menu)
     db.commit()

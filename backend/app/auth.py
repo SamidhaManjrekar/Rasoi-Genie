@@ -8,7 +8,7 @@ from . import models, database
 # Constants for JWT
 SECRET_KEY = "your-secret-key-change-this-in-production"  # 🔐 Replace with a secure value in production
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 120
 
 # OAuth2 password flow setup
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
